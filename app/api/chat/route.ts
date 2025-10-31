@@ -20,7 +20,7 @@ export async function POST(req: NextRequest) {
     if (!message) {
       return NextResponse.json(
         { error: 'Message is required' },
-        { status: 400 }
+        { status: 400, headers: corsHeaders }
       );
     }
 
@@ -51,7 +51,7 @@ ${context}`;
         'X-Title': 'RAG Chatbot',
       },
       body: JSON.stringify({
-        model: 'deepseek/deepseek-chat',
+        model: 'openai/gpt-oss-20b:free',
         messages: [
           {
             role: 'system',
@@ -72,22 +72,33 @@ ${context}`;
       console.error('OpenRouter API Error:', errorData);
       return NextResponse.json(
         { error: 'Failed to get response from AI' },
-        { status: response.status }
+        { status: response.status, headers: corsHeaders }
       );
     }
 
     const data = await response.json();
-    const aiResponse = data.choices[0]?.message?.content || 'No response generated';
+    console.log('OpenRouter Response:', JSON.stringify(data, null, 2));
+    
+    // Check if response has the expected structure
+    if (!data.choices || !data.choices[0] || !data.choices[0].message) {
+      console.error('Unexpected API response structure:', data);
+      return NextResponse.json(
+        { error: 'Unexpected response from AI' },
+        { status: 500, headers: corsHeaders }
+      );
+    }
+
+    const aiResponse = data.choices[0].message.content || 'No response generated';
 
     return NextResponse.json({
       response: aiResponse
-    });
+    }, { headers: corsHeaders });
 
   } catch (error) {
     console.error('Chat API Error:', error);
     return NextResponse.json(
       { error: 'Internal server error' },
-      { status: 500 }
+      { status: 500, headers: corsHeaders }
     );
   }
 }
