@@ -1,0 +1,82 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { getAllChunks } from '@/lib/documents';
+import { findRelevantChunks } from '@/lib/search';
+
+export async function POST(req: NextRequest) {
+  try {
+    const { message } = await req.json();
+
+    if (!message) {
+      return NextResponse.json(
+        { error: 'Message is required' },
+        { status: 400 }
+      );
+    }
+
+    // Get all document chunks
+    const allChunks = getAllChunks();
+
+    // Find relevant chunks based on the user's question
+    const relevantChunks = findRelevantChunks(message, allChunks, 3);
+
+    // Build context from relevant chunks
+    const context = relevantChunks
+      .map(chunk => `From ${chunk.docTitle}:\n${chunk.content}`)
+      .join('\n\n---\n\n');
+
+    // Create the prompt for DeepSeek
+    const systemPrompt = `You are a helpful assistant. Answer the user's question based on the following context from the knowledge base. If the answer cannot be found in the context, say so politely.
+
+Context:
+${context}`;
+
+    // Call OpenRouter API with DeepSeek
+    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'http://localhost:3000',
+        'X-Title': 'RAG Chatbot',
+      },
+      body: JSON.stringify({
+        model: 'deepseek/deepseek-chat',
+        messages: [
+          {
+            role: 'system',
+            content: systemPrompt
+          },
+          {
+            role: 'user',
+            content: message
+          }
+        ],
+        temperature: 0.7,
+        max_tokens: 1000,
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      console.error('OpenRouter API Error:', errorData);
+      return NextResponse.json(
+        { error: 'Failed to get response from AI' },
+        { status: response.status }
+      );
+    }
+
+    const data = await response.json();
+    const aiResponse = data.choices[0]?.message?.content || 'No response generated';
+
+    return NextResponse.json({
+      response: aiResponse
+    });
+
+  } catch (error) {
+    console.error('Chat API Error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
