@@ -28,7 +28,7 @@ export async function POST(req: NextRequest) {
     const allChunks = getAllChunks();
 
     // Find relevant chunks based on the user's question
-    const relevantChunks = findRelevantChunks(message, allChunks, 3);
+    const relevantChunks = findRelevantChunks(message, allChunks, 5);
 
     // Build context from relevant chunks
     const context = relevantChunks
