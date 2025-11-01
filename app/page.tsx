@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
+import ReactMarkdown from 'react-markdown';
 import styles from './page.module.css';
 
 interface Message {
@@ -96,7 +97,41 @@ export default function Home() {
                 {msg.role === 'user' ? 'U' : 'AI'}
               </div>
               <div className={styles.messageContent}>
-                <p>{msg.content}</p>
+                {msg.role === 'user' ? (
+                  <p>{msg.content}</p>
+                ) : (
+                  <ReactMarkdown
+                    components={{
+                      code: ({ node, inline, className, children, ...props }: any) => {
+                        return inline ? (
+                          <code className={styles.inlineCode} {...props}>
+                            {children}
+                          </code>
+                        ) : (
+                          <pre className={styles.codeBlock}>
+                            <code {...props}>{children}</code>
+                          </pre>
+                        );
+                      },
+                      p: ({ children }) => <p className={styles.paragraph}>{children}</p>,
+                      ul: ({ children }) => <ul className={styles.list}>{children}</ul>,
+                      ol: ({ children }) => <ol className={styles.orderedList}>{children}</ol>,
+                      li: ({ children }) => <li className={styles.listItem}>{children}</li>,
+                      h1: ({ children }) => <h1 className={styles.heading1}>{children}</h1>,
+                      h2: ({ children }) => <h2 className={styles.heading2}>{children}</h2>,
+                      h3: ({ children }) => <h3 className={styles.heading3}>{children}</h3>,
+                      strong: ({ children }) => <strong className={styles.bold}>{children}</strong>,
+                      em: ({ children }) => <em className={styles.italic}>{children}</em>,
+                      a: ({ href, children }) => (
+                        <a href={href} className={styles.link} target="_blank" rel="noopener noreferrer">
+                          {children}
+                        </a>
+                      ),
+                    }}
+                  >
+                    {msg.content}
+                  </ReactMarkdown>
+                )}
               </div>
             </div>
           ))}
