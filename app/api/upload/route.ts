@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { env, pipeline } from '@xenova/transformers';
 import { store, DocumentChunk } from '@/lib/store';
 import { chunkDocument } from '@/lib/documents';
+import { extractTextWithOCR } from '@/lib/ocr';
 
 // Disable local model loading — always fetch from HuggingFace Hub
 env.allowLocalModels = false;
@@ -10,6 +11,10 @@ env.allowLocalModels = false;
 // Unlike regular require(), webpack does NOT transform or bundle modules loaded this way.
 // This is the official webpack escape hatch for loading CJS modules that break under bundling.
 declare const __non_webpack_require__: typeof require;
+
+// Minimum characters to consider pdf-parse extraction valid.
+// Scanned PDFs usually return empty or very short strings (just whitespace/page numbers).
+const MIN_TEXT_LENGTH = 50;
 
 // Singleton to avoid re-loading the embedding model on every request
 class PipelineSingleton {
@@ -46,26 +51,58 @@ export async function POST(req: NextRequest) {
     const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
-    // Load pdf-parse at runtime using webpack's built-in escape hatch
-    const pdfParse = __non_webpack_require__('pdf-parse');
-    const pdfData = await pdfParse(buffer);
-    const textContent: string = pdfData.text;
+    // ── STEP 1: Try digital text extraction first ──
+    let textContent = '';
+    let usedOCR = false;
 
-    if (!textContent || textContent.trim() === '') {
-      return NextResponse.json({ error: 'Could not extract text from PDF' }, { status: 400 });
+    try {
+      const pdfParse = __non_webpack_require__('pdf-parse');
+      const pdfData = await pdfParse(buffer);
+      textContent = pdfData.text || '';
+    } catch (parseError) {
+      console.warn('pdf-parse failed, will attempt OCR:', parseError);
+      textContent = '';
     }
 
-    // Chunk the extracted text
+    // ── STEP 2: If digital text is too sparse, fall back to OCR ──
+    if (textContent.trim().length < MIN_TEXT_LENGTH) {
+      console.log(`Digital text too short (${textContent.trim().length} chars). Attempting OCR...`);
+      
+      try {
+        const ocrResult = await extractTextWithOCR(buffer);
+        textContent = ocrResult.text;
+        usedOCR = true;
+        
+        console.log(
+          `OCR complete: ${ocrResult.totalPages} pages, ` +
+          `${textContent.length} chars, ` +
+          `avg confidence: ${ocrResult.avgConfidence}%`
+        );
+      } catch (ocrError: any) {
+        console.error('OCR failed:', ocrError);
+        return NextResponse.json(
+          { error: 'Could not extract text from PDF. Both digital extraction and OCR failed.' },
+          { status: 400 }
+        );
+      }
+    }
+
+    if (!textContent || textContent.trim().length < 10) {
+      return NextResponse.json(
+        { error: 'Could not extract meaningful text from PDF' },
+        { status: 400 }
+      );
+    }
+
+    // ── STEP 3: Chunk the extracted text ──
     const rawChunks = chunkDocument(textContent, 500);
 
     if (rawChunks.length === 0) {
       return NextResponse.json({ error: 'No valid chunks extracted' }, { status: 400 });
     }
 
-    // Load the embedding model (cached after first load)
+    // ── STEP 4: Generate embeddings ──
     const extractor = await PipelineSingleton.getInstance();
-    
-    // Generate embeddings for each chunk
     const uploadedChunks: DocumentChunk[] = [];
     
     for (let i = 0; i < rawChunks.length; i++) {
@@ -80,13 +117,16 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // Save to in-memory store
+    // ── STEP 5: Save to in-memory store ──
     store.setChunks(uploadedChunks);
 
     return NextResponse.json({ 
       success: true, 
-      message: 'PDF processed successfully',
+      message: usedOCR 
+        ? `PDF processed with OCR successfully` 
+        : 'PDF processed successfully',
       chunksProcessed: uploadedChunks.length,
+      usedOCR,
     });
 
   } catch (error: any) {
