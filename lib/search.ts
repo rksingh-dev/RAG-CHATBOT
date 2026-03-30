@@ -1,27 +1,35 @@
-// Simple keyword-based similarity search
-// For a production app, you'd want to use proper embeddings and vector search
-
-export function calculateSimilarity(text1: string, text2: string): number {
-  const words1 = text1.toLowerCase().split(/\s+/);
-  const words2 = text2.toLowerCase().split(/\s+/);
+// Cosine similarity for embeddings
+export function calculateCosineSimilarity(vecA: number[], vecB: number[]): number {
+  if (vecA.length !== vecB.length) {
+    throw new Error('Vectors must have the same length');
+  }
   
-  const set1 = new Set(words1);
-  const set2 = new Set(words2);
+  let dotProduct = 0;
+  let normA = 0;
+  let normB = 0;
   
-  const intersection = new Set([...set1].filter(x => set2.has(x)));
-  const union = new Set([...set1, ...set2]);
+  for (let i = 0; i < vecA.length; i++) {
+    dotProduct += vecA[i] * vecB[i];
+    normA += vecA[i] * vecA[i];
+    normB += vecB[i] * vecB[i];
+  }
   
-  return intersection.size / union.size;
+  if (normA === 0 || normB === 0) return 0;
+  
+  return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
 }
 
-export function findRelevantChunks(
-  query: string,
-  chunks: Array<{ content: string; docId: string; docTitle: string }>,
+// Ensure chunk array element matches DocumentChunk interface logic
+export function findRelevantChunksByEmbedding(
+  queryEmbedding: number[],
+  chunks: Array<{ content: string; docTitle: string; embedding: number[] }>,
   topK: number = 3
-): Array<{ content: string; docId: string; docTitle: string; score: number }> {
+): Array<{ content: string; docTitle: string; score: number }> {
+  
   const scoredChunks = chunks.map(chunk => ({
-    ...chunk,
-    score: calculateSimilarity(query, chunk.content)
+    content: chunk.content,
+    docTitle: chunk.docTitle,
+    score: calculateCosineSimilarity(queryEmbedding, chunk.embedding)
   }));
 
   return scoredChunks
