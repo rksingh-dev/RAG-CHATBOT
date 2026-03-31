@@ -1,34 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { env, pipeline } from '@xenova/transformers';
+import { env } from '@xenova/transformers';
 import { store, DocumentChunk } from '@/lib/store';
 import { chunkDocument } from '@/lib/documents';
 import { extractTextWithOCR } from '@/lib/ocr';
+import { embedBatch, warmupModels } from '@/lib/embeddings';
 
-// Disable local model loading — always fetch from HuggingFace Hub
 env.allowLocalModels = false;
 
-// __non_webpack_require__ is a webpack global that maps to Node.js's real require().
-// Unlike regular require(), webpack does NOT transform or bundle modules loaded this way.
-// This is the official webpack escape hatch for loading CJS modules that break under bundling.
 declare const __non_webpack_require__: typeof require;
 
-// Minimum characters to consider pdf-parse extraction valid.
-// Scanned PDFs usually return empty or very short strings (just whitespace/page numbers).
 const MIN_TEXT_LENGTH = 50;
-
-// Singleton to avoid re-loading the embedding model on every request
-class PipelineSingleton {
-  static task: any = 'feature-extraction';
-  static model = 'Xenova/all-MiniLM-L6-v2';
-  static instance: any = null;
-
-  static async getInstance() {
-    if (this.instance === null) {
-      this.instance = await pipeline(this.task, this.model);
-    }
-    return this.instance;
-  }
-}
 
 export async function POST(req: NextRequest) {
   try {
@@ -47,11 +28,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'File exceeds 50MB limit' }, { status: 400 });
     }
 
-    // Convert file to buffer
+    // Start warming models in parallel with PDF extraction
+    const modelWarmup = warmupModels();
+
     const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
-    // ── STEP 1: Try digital text extraction first ──
+    // ── STEP 1: Extract text (digital + OCR fallback) ──
     let textContent = '';
     let usedOCR = false;
 
@@ -64,15 +47,14 @@ export async function POST(req: NextRequest) {
       textContent = '';
     }
 
-    // ── STEP 2: If digital text is too sparse, fall back to OCR ──
     if (textContent.trim().length < MIN_TEXT_LENGTH) {
       console.log(`Digital text too short (${textContent.trim().length} chars). Attempting OCR...`);
-      
+
       try {
         const ocrResult = await extractTextWithOCR(buffer);
         textContent = ocrResult.text;
         usedOCR = true;
-        
+
         console.log(
           `OCR complete: ${ocrResult.totalPages} pages, ` +
           `${textContent.length} chars, ` +
@@ -94,39 +76,68 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // ── STEP 3: Chunk the extracted text ──
-    const rawChunks = chunkDocument(textContent, 500);
+    await modelWarmup;
 
-    if (rawChunks.length === 0) {
+    // ── STEP 2: Parent-child chunking with contextual headers ──
+    const textChunks = chunkDocument(textContent, {
+      childChunkSize: 256,
+      parentChunkSize: 1024,
+      overlap: 50,
+      minChunkLength: 40,
+      docTitle: file.name,
+    });
+
+    if (textChunks.length === 0) {
       return NextResponse.json({ error: 'No valid chunks extracted' }, { status: 400 });
     }
 
-    // ── STEP 4: Generate embeddings ──
-    const extractor = await PipelineSingleton.getInstance();
-    const uploadedChunks: DocumentChunk[] = [];
-    
-    for (let i = 0; i < rawChunks.length; i++) {
-      const chunkText = rawChunks[i];
-      const output = await extractor(chunkText, { pooling: 'mean', normalize: true });
-      const embeddingArray = Array.from(output.data) as number[];
-      
-      uploadedChunks.push({
-        content: chunkText,
-        docTitle: file.name,
-        embedding: embeddingArray,
-      });
-    }
+    // ── STEP 3: Generate embeddings ──
+    // Use embeddingContent (includes contextual header) for better search
+    const chunkTexts = textChunks.map(c => c.embeddingContent);
+    const embeddings = await embedBatch(chunkTexts, (done, total) => {
+      if (done % 10 === 0 || done === total) {
+        console.log(`[Upload] Embedded ${done}/${total} chunks`);
+      }
+    });
 
-    // ── STEP 5: Save to in-memory store ──
-    store.setChunks(uploadedChunks);
+    // ── STEP 4: Build document chunks ──
+    const documentChunks: DocumentChunk[] = textChunks.map((chunk, i) => ({
+      id: `${file.name}-${chunk.metadata.role}-${chunk.metadata.chunkIndex}`,
+      content: chunk.content,
+      docTitle: file.name,
+      embedding: embeddings[i],
+      metadata: {
+        chunkIndex: chunk.metadata.chunkIndex,
+        totalChunks: chunk.metadata.totalChunks,
+        estimatedPage: chunk.metadata.estimatedPage,
+        parentIndex: chunk.metadata.parentIndex,
+        role: chunk.metadata.role,
+        contextHeader: chunk.metadata.contextHeader,
+      },
+    }));
 
-    return NextResponse.json({ 
-      success: true, 
-      message: usedOCR 
-        ? `PDF processed with OCR successfully` 
+    // ── STEP 5: Save to persistent store ──
+    store.setChunks(documentChunks);
+
+    const searchCount = documentChunks.filter(c => c.metadata.role === 'search').length;
+    const contextCount = documentChunks.filter(c => c.metadata.role === 'context').length;
+
+    return NextResponse.json({
+      success: true,
+      message: usedOCR
+        ? 'PDF processed with OCR successfully'
         : 'PDF processed successfully',
-      chunksProcessed: uploadedChunks.length,
+      totalChunks: documentChunks.length,
+      searchChunks: searchCount,
+      contextChunks: contextCount,
       usedOCR,
+      pipeline: {
+        embeddingModel: 'bge-small-en-v1.5',
+        chunking: 'parent-child with contextual headers',
+        childSize: 256,
+        parentSize: 1024,
+        overlap: 50,
+      },
     });
 
   } catch (error: any) {

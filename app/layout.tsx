@@ -2,8 +2,8 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'RAG',
-  description: 'AI-powered chatbot with RAG capabilities',
+  title: 'RAG Chatbot — Hybrid Search + Re-Ranking',
+  description: 'Advanced PDF chatbot with hybrid search (dense + BM25), cross-encoder re-ranking, MMR diversity, and streaming responses',
 };
 
 export default function RootLayout({
