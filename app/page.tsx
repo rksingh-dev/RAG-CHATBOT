@@ -237,6 +237,7 @@ export default function Home() {
             <span className={styles.headerIcon}>⚡</span> RAG
           </h1>
           <span className={styles.headerBadge}>Hybrid Search · Re-Ranking · Streaming</span>
+          <span className={styles.headerCredit}>Made by Rahul Singh</span>
         </div>
         {isReady && (
           <button
